@@ -6,7 +6,6 @@ type StoreState = {
   isConnected: boolean;
   selectedSymbol: string | null;
   priceHistory: Record<string, number[]>;
-
   setStock: (stock: Stock) => void;
   setConnected: (value: boolean) => void;
   setSelected: (symbol: string | null) => void;
@@ -20,21 +19,26 @@ export const useStockStore = create<StoreState>()((set) => ({
 
   setStock: (stock: Stock) =>
     set((state) => {
-      const oldHistory = state.priceHistory[stock.symbol] || [];
+      // 1. Safety check: If there's no symbol, don't update
+      const symbol = stock.symbol;
+      if (!symbol) return state;
+
+      const oldHistory = state.priceHistory[symbol] || [];
+      // 2. Add new price and keep only last 30 entries
       const newHistory = [...oldHistory, stock.price].slice(-30);
+
       return {
         stocks: { 
           ...state.stocks, 
-          [stock.symbol]: stock 
+          [symbol]: stock 
         },
         priceHistory: { 
           ...state.priceHistory, 
-          [stock.symbol]: newHistory 
+          [symbol]: newHistory 
         },
       };
     }),
 
   setConnected: (value: boolean) => set({ isConnected: value }),
-  
   setSelected: (symbol: string | null) => set({ selectedSymbol: symbol }),
 }));

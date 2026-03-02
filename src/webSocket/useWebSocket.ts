@@ -5,71 +5,93 @@ import type { Stock } from "../types/stockTypes";
 const SERVER_URL = "ws://localhost:8080";
 
 export function useWebSocket() {
-    const wsRef = useRef<WebSocket | null>(null);
-    const retryCountRef = useRef<number>(0);
-    const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const isIntentionalClose = useRef(false);
+  const retryCountRef = useRef<number>(0);
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-    const { setStock, setConnected } = useStockStore();
+  const { setStock, setConnected } = useStockStore();
 
-    function getWaitTime(): number {
-        const seconds = Math.pow(2, retryCountRef.current);
-        return Math.min(seconds, 30) * 1000;
-    }
+  function getWaitTime(): number {
+    const seconds = Math.pow(2, retryCountRef.current);
+    return Math.min(seconds, 30) * 1000;
+  }
 
-    function connect() {
-        console.log(`Connecting to ${SERVER_URL}...`);
-        if (wsRef.current) wsRef.current.close();
+  function connect() {
+    console.log(`Attempting connection to ${SERVER_URL}...`);
+    isIntentionalClose.current = false;
 
-        const ws = new WebSocket(SERVER_URL);
-        wsRef.current = ws;
+    const ws = new WebSocket(SERVER_URL);
+    wsRef.current = ws;
 
-        ws.onopen = () => {
-            console.log("Connected to Server");
-            setConnected(true);
-            retryCountRef.current = 0;
-        };
+    ws.onopen = () => {
+      console.log(" Connected to Server");
+      setConnected(true);
+      retryCountRef.current = 0;
+    };
 
-        ws.onmessage = (event: MessageEvent) => {
-            try {
-                const msg = JSON.parse(event.data);
+    ws.onmessage = (event: MessageEvent) => {
+      try {
+        const msg = JSON.parse(event.data);
+        
+        // Handle various wrapper formats (.data, .stock, or root)
+        const rawData = msg.data || msg.stock || msg;
+        const symbol = msg.symbol || rawData.symbol || rawData.s;
 
-                const rawData = msg.data || msg.stock;
+        if (rawData && symbol) {
+          const formattedStock: Stock = {
+            ...rawData,
+            symbol: symbol,
+            // 1. Map Price: Check 'value' (Index) vs 'ltp' (Equity)
+            price: Number(rawData.value || rawData.ltp || rawData.price || 0),
+            
+            // 2. Map Volume: Check 'v', 'vol', or 'volume'
+            volume: Number(rawData.v || rawData.vol || rawData.volume || 0),
+            
+            // 3. Map Changes
+            change: Number(rawData.change || rawData.c || 0),
+            changePercent: Number(rawData.changePercent || rawData.pc || rawData.cp || 0),
+          };
 
-                if (rawData && (msg.type === "SNAPSHOT" || msg.type === "STOCK_UPDATE")) {
+          setStock(formattedStock);
+        }
+      } catch (err) {
+        console.error("Parse error in WebSocket message:", err);
+      }
+    };
 
-                    const formattedStock: Stock = {
-                        ...rawData,
-                        price: rawData.ltp,
-                    };
-                    setStock(formattedStock);
-                }
-            } catch (err) {
-                console.error("Parse error:", err);
-            }
-        };
-        ws.onclose = (e) => {
-            setConnected(false);
-            console.log(e);
-            if (wsRef.current === null) return;
+    ws.onclose = (e) => {
+        console.log(e);
+      setConnected(false);
+      if (isIntentionalClose.current) {
+        console.log("Clean closure. No retry.");
+        return;
+      }
 
-            const waitTime = getWaitTime();
-            retryCountRef.current += 1;
-            console.log(`Disconnected. Retrying in ${waitTime / 1000}s...`);
-            retryTimerRef.current = setTimeout(connect, waitTime);
-        };
-
-        ws.onerror = (error) => {
-            console.error("WebSocket Error:", error);
-        };
-    }
-
-    useEffect(() => {
+      const waitTime = getWaitTime();
+      retryCountRef.current += 1;
+      console.warn(`Socket Closed. Retrying in ${waitTime / 1000}s...`);
+      
+      retryTimerRef.current = setTimeout(() => {
         connect();
-        return () => {
-            if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
-            const ws = wsRef.current;
-            wsRef.current = null;
-            if (ws) ws.close();
-        };
-    }, []);
+      }, waitTime);
+    };
+
+    ws.onerror = (error) => {
+      console.error("WebSocket Error:", error);
+    };
+  }
+
+  useEffect(() => {
+    connect();
+
+    return () => {
+      isIntentionalClose.current = true;
+      if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+    };
+  }, []);
 }
